@@ -1619,15 +1619,15 @@ In addition, you may optionally specify a register to read from or write to, as 
 
 There are two patterns for writing data to an I2C device:
 
-1. Queuing [`i2c:write_bytes/2,3,4`](./apidocs/erlang/eavmlib/i2c.md#write_bytes2) write operations between calls to [`i2c:begin_transmission/2`](./apidocs/erlang/eavmlib/i2c.md#begin_transmission2) and [`i2c:end_transmission/1`](./apidocs/erlang/eavmlib/i2c.md#end_transmission1).  In this case, write operations are queued locally and dispatched to the target device when the `i2c:end_transmission/1` operation is called;
-1. Writing a byte or sequence of bytes in one `i2c:write_bytes/2,3,4` operation.
+1. Queuing [`i2c:write_bytes/2`](./apidocs/erlang/eavmlib/i2c.md#write_bytes2) write operations between calls to [`i2c:begin_transmission/2`](./apidocs/erlang/eavmlib/i2c.md#begin_transmission2) and [`i2c:end_transmission/1`](./apidocs/erlang/eavmlib/i2c.md#end_transmission1).  In this case, write operations are queued locally and dispatched to the target device when the `i2c:end_transmission/1` operation is called;
+2. Writing a byte [`i2c:write_byte/2`](./apidocs/erlang/eavmlib/i2c.md#write_byte2) or sequence of bytes in one [`i2c:write_bytes/3,4`](./apidocs/erlang/eavmlib/i2c.md#write_bytes2) operation.
 
 The choice of which pattern to use will depend on the device being communicated with.  For example, some devices require a sequence of write operations to be queued and written in one atomic write, in which case the first pattern is appropriate.  E.g.,
 
 ```erlang
-ok = i2c:begin_transmission(I2C),
-ok = i2c:qwrite_bytes(I2C, DeviceAddress, Register1, <<"some sequence of bytes">>),
-ok = i2c:qwrite_bytes(I2C, DeviceAddress, Register2, <<"some other of bytes">>),
+ok = i2c:begin_transmission(I2C, DeviceAddress),
+ok = i2c:write_bytes(I2C, <<"some sequence of bytes">>),
+ok = i2c:write_bytes(I2C, <<"some other of bytes">>),
 ok = i2c:end_transmission(I2C),
 ```
 
