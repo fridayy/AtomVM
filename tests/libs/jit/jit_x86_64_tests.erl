@@ -820,17 +820,35 @@ if_else_block_test() ->
         >>,
     ?assertEqual(dump_to_bin(Dump), Stream).
 
-shift_right_test() ->
-    State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
-    {State1, Reg} = ?BACKEND:move_to_native_register(State0, {x_reg, 0}),
-    State2 = ?BACKEND:shift_right(State1, Reg, 3),
-    Stream = ?BACKEND:stream(State2),
-    Dump =
-        <<
-            "   0:	48 8b 47 30          	mov    0x30(%rdi),%rax\n"
-            "   4:	48 c1 e8 03          	shr    $0x3,%rax"
-        >>,
-    ?assertEqual(dump_to_bin(Dump), Stream).
+shift_right_test_() ->
+    [
+        ?_test(begin
+            State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
+            {State1, Reg} = ?BACKEND:move_to_native_register(State0, {x_reg, 0}),
+            {State2, Reg} = ?BACKEND:shift_right(State1, {free, Reg}, 3),
+            Stream = ?BACKEND:stream(State2),
+            Dump =
+                <<
+                    "   0:	48 8b 47 30          	mov    0x30(%rdi),%rax\n"
+                    "   4:	48 c1 e8 03          	shr    $0x3,%rax"
+                >>,
+            ?assertEqual(dump_to_bin(Dump), Stream)
+        end),
+        ?_test(begin
+            State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
+            {State1, Reg} = ?BACKEND:move_to_native_register(State0, {x_reg, 0}),
+            {State2, OtherReg} = ?BACKEND:shift_right(State1, Reg, 3),
+            ?assertNotEqual(OtherReg, Reg),
+            Stream = ?BACKEND:stream(State2),
+            Dump =
+                <<
+                    "   0:	48 8b 47 30          	mov    0x30(%rdi),%rax\n"
+                    "   4:	49 89 c3             	mov    %rax,%r11\n"
+                    "   7:	49 c1 eb 03          	shr    $0x3,%r11"
+                >>,
+            ?assertEqual(dump_to_bin(Dump), Stream)
+        end)
+    ].
 
 shift_left_test() ->
     State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
@@ -939,7 +957,7 @@ call_bif_with_large_literal_integer_test() ->
 get_list_test() ->
     State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
     {State1, Reg} = ?BACKEND:move_to_native_register(State0, {x_reg, 0}),
-    State2 = ?BACKEND:and_(State1, Reg, -4),
+    {State2, Reg} = ?BACKEND:and_(State1, {free, Reg}, -4),
     State3 = ?BACKEND:move_array_element(State2, Reg, 1, {y_reg, 1}),
     State4 = ?BACKEND:move_array_element(State3, Reg, 0, {y_reg, 0}),
     State5 = ?BACKEND:free_native_registers(State4, [Reg]),
@@ -969,11 +987,17 @@ is_integer_test() ->
                     ?BACKEND:jump_to_label(BSt0, Label)
                 end
             ),
-            MSt2 = ?BACKEND:and_(MSt1, Reg, ?TERM_PRIMARY_CLEAR_MASK),
+            {MSt2, Reg} = ?BACKEND:and_(MSt1, {free, Reg}, ?TERM_PRIMARY_CLEAR_MASK),
             MSt3 = ?BACKEND:move_array_element(MSt2, Reg, 0, Reg),
             ?BACKEND:if_block(
                 MSt3,
-                {{free, Reg}, '&', ?TERM_BOXED_TAG_MASK, '!=', ?TERM_BOXED_POSITIVE_INTEGER},
+                {
+                    {free, Reg},
+                    '&',
+                    ?TERM_BOXED_TAG_MASK_NO_SIGN,
+                    '!=',
+                    ?TERM_BOXED_POSITIVE_INTEGER
+                },
                 fun(BSt0) ->
                     ?BACKEND:jump_to_label(BSt0, Label)
                 end
@@ -999,7 +1023,7 @@ is_integer_test() ->
         "  1e:	e9 13 01 00 00       	jmpq   0x136\n"
         "  23:	48 83 e0 fc          	and    $0xfffffffffffffffc,%rax\n"
         "  27:	48 8b 00             	mov    (%rax),%rax\n"
-        "  2a:	24 3f                	and    $0x3f,%al\n"
+        "  2a:	24 3b                	and    $0x3b,%al\n"
         "  2c:	80 f8 08             	cmp    $0x8,%al\n"
         "  2f:	74 05                	je     0x36\n"
         "  31:	e9 00 01 00 00       	jmpq   0x136"
@@ -1021,11 +1045,11 @@ is_number_test() ->
             BSt1 = cond_jump_to_label(
                 {Reg, '&', ?TERM_PRIMARY_MASK, '!=', ?TERM_PRIMARY_BOXED}, Label, ?BACKEND, BSt0
             ),
-            BSt2 = ?BACKEND:and_(BSt1, Reg, ?TERM_PRIMARY_CLEAR_MASK),
+            {BSt2, Reg} = ?BACKEND:and_(BSt1, {free, Reg}, ?TERM_PRIMARY_CLEAR_MASK),
             BSt3 = ?BACKEND:move_array_element(BSt2, Reg, 0, Reg),
             cond_jump_to_label(
                 {'and', [
-                    {Reg, '&', ?TERM_BOXED_TAG_MASK, '!=', ?TERM_BOXED_POSITIVE_INTEGER},
+                    {Reg, '&', ?TERM_BOXED_TAG_MASK_NO_SIGN, '!=', ?TERM_BOXED_POSITIVE_INTEGER},
                     {{free, Reg}, '&', ?TERM_BOXED_TAG_MASK, '!=', ?TERM_BOXED_FLOAT}
                 ]},
                 Label,
@@ -1054,7 +1078,7 @@ is_number_test() ->
         "  23:	48 83 e0 fc          	and    $0xfffffffffffffffc,%rax\n"
         "  27:	48 8b 00             	mov    (%rax),%rax\n"
         "  2a:	49 89 c3             	mov    %rax,%r11\n"
-        "  2d:	41 80 e3 3f          	and    $0x3f,%r11b\n"
+        "  2d:	41 80 e3 3b          	and    $0x3b,%r11b\n"
         "  31:	41 80 fb 08          	cmp    $0x8,%r11b\n"
         "  35:	74 0c                	je     0x43\n"
         "  37:	24 3f                	and    $0x3f,%al\n"
@@ -1130,7 +1154,7 @@ call_fun_test() ->
             ])
         end
     ),
-    State5 = ?BACKEND:and_(State4, RegCopy, ?TERM_PRIMARY_CLEAR_MASK),
+    {State5, RegCopy} = ?BACKEND:and_(State4, {free, RegCopy}, ?TERM_PRIMARY_CLEAR_MASK),
     State6 = ?BACKEND:move_array_element(State5, RegCopy, 0, RegCopy),
     State7 = ?BACKEND:if_block(
         State6, {RegCopy, '&', ?TERM_BOXED_TAG_MASK, '!=', ?TERM_BOXED_FUN}, fun(BSt0) ->
@@ -1558,6 +1582,21 @@ move_to_array_element_test_() ->
                 end)
             ]
         end}.
+
+%% Test jump_to_continuation optimization for intra-module returns
+jump_to_continuation_test() ->
+    State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
+    State1 = ?BACKEND:jump_to_continuation(State0, {free, rax}),
+    Stream = ?BACKEND:stream(State1),
+    % Expected: leaq -0x7(%rip), %rax; addq %rax, %rax; jmpq *%rax
+    % With default offset 0, NetOffset = 0 - 0 = 0, but RIP-relative needs adjustment for instruction length
+    Dump =
+        <<
+            "   0:	48 8d 05 f9 ff ff ff 	lea    -0x7(%rip),%rax\n"
+            "   7:	48 01 c0             	add    %rax,%rax\n"
+            "   a:	ff e0                	jmpq   *%rax"
+        >>,
+    ?assertEqual(dump_to_bin(Dump), Stream).
 
 dump_to_bin(Dump) ->
     dump_to_bin0(Dump, addr, []).

@@ -107,7 +107,7 @@ call_primitive_6_args_test() ->
     State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
     % Get bin_ptr from x_reg 0 (similar to get_list_test pattern)
     {State1, RegA} = ?BACKEND:move_to_native_register(State0, {x_reg, 0}),
-    State2 = ?BACKEND:and_(State1, RegA, ?TERM_PRIMARY_CLEAR_MASK),
+    {State2, RegA} = ?BACKEND:and_(State1, {free, RegA}, ?TERM_PRIMARY_CLEAR_MASK),
     % Get another register for the last parameter to test {free, Reg} handling
     {State3, OtherReg} = ?BACKEND:move_to_native_register(State2, {x_reg, 1}),
     % Call PRIM_BITSTRING_EXTRACT_INTEGER with 6 arguments
@@ -312,13 +312,13 @@ call_primitive_last_5_args_test() ->
         "   6:	9700      	str	r7, [sp, #0]\n"
         "   8:	9902      	ldr	r1, [sp, #8]\n"
         "   a:	2204      	movs	r2, #4\n"
-        "   c:	4b00      	ldr	r3, [pc, #0]	; (0x10)\n"
-        "   e:	e001      	b.n	0x14\n"
-        "  10:	02cb      	lsrs	r3, r1, #16\n"
-        "  12:	0000      	movs	r0, r0\n"
-        "  14:	47b0      	blx	r6\n"
-        "  16:	b002      	add	sp, #8\n"
-        "  18:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}"
+        "   c:	4b01      	ldr	r3, [pc, #4]	; (0x14)\n"
+        "   e:	47b0      	blx	r6\n"
+        "  10:	b002      	add	sp, #8\n"
+        "  12:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        % Literal pool
+        "  14:	02cb      	lsls	r3, r1, #11\n"
+        "  16:	0000      	movs	r0, r0"
     >>,
     ?assertEqual(dump_to_bin(Dump), Stream).
 
@@ -535,17 +535,17 @@ if_block_test_() ->
                             ?BACKEND:add(BSt0, RegB, 2)
                         end
                     ),
-                    Stream = ?BACKEND:stream(State1),
+                    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+                    Stream = ?BACKEND:stream(State2),
                     Dump = <<
                         "   0:	6987      	ldr	r7, [r0, #24]\n"
                         "   2:	69c6      	ldr	r6, [r0, #28]\n"
-                        "   4:	4d00      	ldr	r5, [pc, #0]	; (0x8)\n"
-                        "   6:	da04      	bge.n	0x12\n"
-                        "   8:	0400      	lsls	r0, r0, #16\n"
-                        "   a:	0000      	movs	r0, r0\n"
-                        "   c:	42af      	cmp	r7, r5\n"
-                        "   e:	dafe      	bge.n	0xe\n"
-                        "  10:	3602      	adds	r6, #2"
+                        "   4:	2580      	movs	r5, #128	; 0x80\n"
+                        "   6:	00ed      	lsls	r5, r5, #3\n"
+                        "   8:	42af      	cmp	r7, r5\n"
+                        "   a:	da00      	bge.n	0xe\n"
+                        "   c:	3602      	adds	r6, #2\n"
+                        "   e:	e077      	b.n	0x100"
                     >>,
                     ?assertEqual(dump_to_bin(Dump), Stream),
                     ?assertEqual([RegB, RegA], ?BACKEND:used_regs(State1))
@@ -713,17 +713,19 @@ if_block_test_() ->
                             ?BACKEND:add(BSt0, RegB, 1)
                         end
                     ),
-                    Stream = ?BACKEND:stream(State1),
+                    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+                    Stream = ?BACKEND:stream(State2),
                     Dump = <<
                         "   0:	6987      	ldr	r7, [r0, #24]\n"
                         "   2:	69c6      	ldr	r6, [r0, #28]\n"
-                        "   4:	4d00      	ldr	r5, [pc, #0]	; (0x8)\n"
-                        "   6:	e001      	b.n	0xc\n"
-                        "   8:	07cb      	lsls	r3, r1, #31\n"
-                        "   a:	0000      	movs	r0, r0\n"
-                        "   c:	42af      	cmp	r7, r5\n"
-                        "   e:	d000      	beq.n	0x12\n"
-                        "  10:	3601      	adds	r6, #1"
+                        "   4:	4d02      	ldr	r5, [pc, #8]	; (0x10)\n"
+                        "   6:	42af      	cmp	r7, r5\n"
+                        "   8:	d000      	beq.n	0xc\n"
+                        "   a:	3601      	adds	r6, #1\n"
+                        "   c:	e078      	b.n	0x100\n"
+                        "   e:	0000      	movs	r0, r0\n"
+                        "  10:	07cb      	lsls	r3, r1, #31\n"
+                        "  12:	0000      	movs	r0, r0"
                     >>,
                     ?assertEqual(dump_to_bin(Dump), Stream)
                 end),
@@ -1063,6 +1065,140 @@ if_block_test_() ->
                     >>,
                     ?assertEqual(dump_to_bin(Dump), Stream),
                     ?assertEqual([RegB], ?BACKEND:used_regs(State1))
+                end),
+                ?_test(begin
+                    State1 = ?BACKEND:if_block(
+                        State0,
+                        {100, '<', RegA},
+                        fun(BSt0) ->
+                            ?BACKEND:add(BSt0, RegB, 2)
+                        end
+                    ),
+                    Stream = ?BACKEND:stream(State1),
+                    Dump = <<
+                        "   0:	6987      	ldr	r7, [r0, #24]\n"
+                        "   2:	69c6      	ldr	r6, [r0, #28]\n"
+                        "   4:	2f64      	cmp	r7, #100	; 0x64\n"
+                        "   6:	dd00      	ble.n	0xa\n"
+                        "   8:	3602      	adds	r6, #2"
+                    >>,
+                    ?assertEqual(dump_to_bin(Dump), Stream),
+                    ?assertEqual([RegB, RegA], ?BACKEND:used_regs(State1))
+                end),
+                ?_test(begin
+                    State1 = ?BACKEND:if_block(
+                        State0,
+                        {100, '<', {free, RegA}},
+                        fun(BSt0) ->
+                            ?BACKEND:add(BSt0, RegB, 2)
+                        end
+                    ),
+                    Stream = ?BACKEND:stream(State1),
+                    Dump = <<
+                        "   0:	6987      	ldr	r7, [r0, #24]\n"
+                        "   2:	69c6      	ldr	r6, [r0, #28]\n"
+                        "   4:	2f64      	cmp	r7, #100	; 0x64\n"
+                        "   6:	dd00      	ble.n	0xa\n"
+                        "   8:	3602      	adds	r6, #2"
+                    >>,
+                    ?assertEqual(dump_to_bin(Dump), Stream),
+                    ?assertEqual([RegB], ?BACKEND:used_regs(State1))
+                end),
+                ?_test(begin
+                    State1 = ?BACKEND:if_block(
+                        State0,
+                        {1024, '<', RegA},
+                        fun(BSt0) ->
+                            ?BACKEND:add(BSt0, RegB, 2)
+                        end
+                    ),
+                    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+                    Stream = ?BACKEND:stream(State2),
+                    Dump = <<
+                        "   0:	6987      	ldr	r7, [r0, #24]\n"
+                        "   2:	69c6      	ldr	r6, [r0, #28]\n"
+                        "   4:	2580      	movs	r5, #128	; 0x80\n"
+                        "   6:	00ed      	lsls	r5, r5, #3\n"
+                        "   8:	42af      	cmp	r7, r5\n"
+                        "   a:	dd00      	ble.n	0xe\n"
+                        "   c:	3602      	adds	r6, #2\n"
+                        "   e:	e077      	b.n	0x100"
+                    >>,
+                    ?assertEqual(dump_to_bin(Dump), Stream),
+                    ?assertEqual([RegB, RegA], ?BACKEND:used_regs(State1))
+                end),
+                ?_test(begin
+                    State1 = ?BACKEND:if_block(
+                        State0,
+                        {1024, '<', {free, RegA}},
+                        fun(BSt0) ->
+                            ?BACKEND:add(BSt0, RegB, 2)
+                        end
+                    ),
+                    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+                    Stream = ?BACKEND:stream(State2),
+                    Dump = <<
+                        "   0:	6987      	ldr	r7, [r0, #24]\n"
+                        "   2:	69c6      	ldr	r6, [r0, #28]\n"
+                        "   4:	2580      	movs	r5, #128	; 0x80\n"
+                        "   6:	00ed      	lsls	r5, r5, #3\n"
+                        "   8:	42af      	cmp	r7, r5\n"
+                        "   a:	dd00      	ble.n	0xe\n"
+                        "   c:	3602      	adds	r6, #2\n"
+                        "   e:	e077      	b.n	0x100"
+                    >>,
+                    ?assertEqual(dump_to_bin(Dump), Stream),
+                    ?assertEqual([RegB], ?BACKEND:used_regs(State1))
+                end),
+                ?_test(begin
+                    State1 = ?BACKEND:if_block(
+                        State0,
+                        {1023, '<', RegA},
+                        fun(BSt0) ->
+                            ?BACKEND:add(BSt0, RegB, 2)
+                        end
+                    ),
+                    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+                    Stream = ?BACKEND:stream(State2),
+                    Dump = <<
+                        "   0:	6987      	ldr	r7, [r0, #24]\n"
+                        "   2:	69c6      	ldr	r6, [r0, #28]\n"
+                        "   4:	4d02      	ldr	r5, [pc, #8]	; (0x10)\n"
+                        "   6:	42af      	cmp	r7, r5\n"
+                        "   8:	dd00      	ble.n	0xc\n"
+                        "   a:	3602      	adds	r6, #2\n"
+                        "   c:	e078      	b.n	0x100\n"
+                        "   e:	0000      	movs	r0, r0\n"
+                        "  10:	03ff      	lsls	r7, r7, #15\n"
+                        "  12:	0000      	movs	r0, r0"
+                    >>,
+                    ?assertEqual(dump_to_bin(Dump), Stream),
+                    ?assertEqual([RegB, RegA], ?BACKEND:used_regs(State1))
+                end),
+                ?_test(begin
+                    State1 = ?BACKEND:if_block(
+                        State0,
+                        {1023, '<', {free, RegA}},
+                        fun(BSt0) ->
+                            ?BACKEND:add(BSt0, RegB, 2)
+                        end
+                    ),
+                    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+                    Stream = ?BACKEND:stream(State2),
+                    Dump = <<
+                        "   0:	6987      	ldr	r7, [r0, #24]\n"
+                        "   2:	69c6      	ldr	r6, [r0, #28]\n"
+                        "   4:	4d02      	ldr	r5, [pc, #8]	; (0x10)\n"
+                        "   6:	42af      	cmp	r7, r5\n"
+                        "   8:	dd00      	ble.n	0xc\n"
+                        "   a:	3602      	adds	r6, #2\n"
+                        "   c:	e078      	b.n	0x100\n"
+                        "   e:	0000      	movs	r0, r0\n"
+                        "  10:	03ff      	lsls	r7, r7, #15\n"
+                        "  12:	0000      	movs	r0, r0"
+                    >>,
+                    ?assertEqual(dump_to_bin(Dump), Stream),
+                    ?assertEqual([RegB], ?BACKEND:used_regs(State1))
                 end)
             ]
         end}.
@@ -1183,17 +1319,34 @@ if_else_block_test() ->
         >>,
     ?assertEqual(dump_to_bin(Dump), Stream).
 
-shift_right_test() ->
-    State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
-    {State1, Reg} = ?BACKEND:move_to_native_register(State0, {x_reg, 0}),
-    State2 = ?BACKEND:shift_right(State1, Reg, 3),
-    Stream = ?BACKEND:stream(State2),
-    Dump =
-        <<
-            "   0:	6987      	ldr	r7, [r0, #24]\n"
-            "   2:	08ff      	lsrs	r7, r7, #3"
-        >>,
-    ?assertEqual(dump_to_bin(Dump), Stream).
+shift_right_test_() ->
+    [
+        ?_test(begin
+            State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
+            {State1, Reg} = ?BACKEND:move_to_native_register(State0, {x_reg, 0}),
+            {State2, Reg} = ?BACKEND:shift_right(State1, {free, Reg}, 3),
+            Stream = ?BACKEND:stream(State2),
+            Dump =
+                <<
+                    "   0:	6987      	ldr	r7, [r0, #24]\n"
+                    "   2:	08ff      	lsrs	r7, r7, #3"
+                >>,
+            ?assertEqual(dump_to_bin(Dump), Stream)
+        end),
+        ?_test(begin
+            State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
+            {State1, Reg} = ?BACKEND:move_to_native_register(State0, {x_reg, 0}),
+            {State2, OtherReg} = ?BACKEND:shift_right(State1, Reg, 3),
+            ?assertNotEqual(OtherReg, Reg),
+            Stream = ?BACKEND:stream(State2),
+            Dump =
+                <<
+                    "   0:	6987      	ldr	r7, [r0, #24]\n"
+                    "   2:	08fe      	lsrs	r6, r7, #3"
+                >>,
+            ?assertEqual(dump_to_bin(Dump), Stream)
+        end)
+    ].
 
 shift_left_test() ->
     State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
@@ -1378,35 +1531,33 @@ call_only_or_schedule_next_and_label_relocation_large_gap_test() ->
         " 128:	3f01      	subs	r7, #1\n"
         " 12a:	60b7      	str	r7, [r6, #8]\n"
         " 12c:	d004      	beq.n	0x138\n"
-        " 12e:	e011      	b.n	0x154\n"
+        " 12e:	e00f      	b.n	0x150\n"
         " 130:	46c0      	nop			; (mov r8, r8)\n"
         " 132:	46c0      	nop			; (mov r8, r8)\n"
         " 134:	46c0      	nop			; (mov r8, r8)\n"
         " 136:	46c0      	nop			; (mov r8, r8)\n"
         " 138:	a700      	add	r7, pc, #0	; (adr r7, 0x13c)\n"
-        " 13a:	4e01      	ldr	r6, [pc, #4]	; (0x140)\n"
-        " 13c:	e002      	b.n	0x144\n"
-        " 13e:	0000      	movs	r0, r0\n"
-        " 140:	fedd ffff 	stcl2	15, cr13, [sp, #-1020]	; 0xfffffc04\n"
-        " 144:	19f6      	adds	r6, r6, r7\n"
-        " 146:	9f00      	ldr	r7, [sp, #0]\n"
-        " 148:	607e      	str	r6, [r7, #4]\n"
-        " 14a:	6897      	ldr	r7, [r2, #8]\n"
-        " 14c:	9e05      	ldr	r6, [sp, #20]\n"
-        " 14e:	9705      	str	r7, [sp, #20]\n"
-        " 150:	46b6      	mov	lr, r6\n"
-        " 152:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-        " 154:	6817      	ldr	r7, [r2, #0]\n"
-        " 156:	9e05      	ldr	r6, [sp, #20]\n"
-        " 158:	9705      	str	r7, [sp, #20]\n"
-        " 15a:	46b6      	mov	lr, r6\n"
-        " 15c:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-        " 15e:	46c0      	nop			; (mov r8, r8)\n"
-        " 160:	6857      	ldr	r7, [r2, #4]\n"
-        " 162:	9e05      	ldr	r6, [sp, #20]\n"
-        " 164:	9705      	str	r7, [sp, #20]\n"
-        " 166:	46b6      	mov	lr, r6\n"
-        " 168:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}"
+        " 13a:	4e04      	ldr	r6, [pc, #16]	; (0x14c)\n"
+        " 13c:	19f6      	adds	r6, r6, r7\n"
+        " 13e:	9f00      	ldr	r7, [sp, #0]\n"
+        " 140:	607e      	str	r6, [r7, #4]\n"
+        " 142:	6897      	ldr	r7, [r2, #8]\n"
+        " 144:	9e05      	ldr	r6, [sp, #20]\n"
+        " 146:	9705      	str	r7, [sp, #20]\n"
+        " 148:	46b6      	mov	lr, r6\n"
+        " 14a:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        " 14c:	fedd ffff 	mrc2	15, 6, pc, cr13, cr15, {7}\n"
+        " 150:	6817      	ldr	r7, [r2, #0]\n"
+        " 152:	9e05      	ldr	r6, [sp, #20]\n"
+        " 154:	9705      	str	r7, [sp, #20]\n"
+        " 156:	46b6      	mov	lr, r6\n"
+        " 158:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        " 15a:	46c0      	nop			; (mov r8, r8)\n"
+        " 15c:	6857      	ldr	r7, [r2, #4]\n"
+        " 15e:	9e05      	ldr	r6, [sp, #20]\n"
+        " 160:	9705      	str	r7, [sp, #20]\n"
+        " 162:	46b6      	mov	lr, r6\n"
+        " 164:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}"
     >>,
     {_, RelevantBinary} = split_binary(Stream, 16#124),
     ?assertEqual(dump_to_bin(Dump), RelevantBinary).
@@ -1442,35 +1593,33 @@ call_only_or_schedule_next_and_label_relocation_large_gap_unaligned_test() ->
         " 128:	3f01      	subs	r7, #1\n"
         " 12a:	60b7      	str	r7, [r6, #8]\n"
         " 12c:	d004      	beq.n	0x138\n"
-        " 12e:	e011      	b.n	0x154\n"
+        " 12e:	e00f      	b.n	0x150\n"
         " 130:	46c0      	nop			; (mov r8, r8)\n"
         " 132:	46c0      	nop			; (mov r8, r8)\n"
         " 134:	46c0      	nop			; (mov r8, r8)\n"
         " 136:	46c0      	nop			; (mov r8, r8)\n"
         " 138:	a700      	add	r7, pc, #0	; (adr r7, 0x13c)\n"
-        " 13a:	4e01      	ldr	r6, [pc, #4]	; (0x140)\n"
-        " 13c:	e002      	b.n	0x144\n"
-        " 13e:	0000      	movs	r0, r0\n"
-        " 140:	fedd ffff 	stcl2	15, cr13, [sp, #-1020]	; 0xfffffc04\n"
-        " 144:	19f6      	adds	r6, r6, r7\n"
-        " 146:	9f00      	ldr	r7, [sp, #0]\n"
-        " 148:	607e      	str	r6, [r7, #4]\n"
-        " 14a:	6897      	ldr	r7, [r2, #8]\n"
-        " 14c:	9e05      	ldr	r6, [sp, #20]\n"
-        " 14e:	9705      	str	r7, [sp, #20]\n"
-        " 150:	46b6      	mov	lr, r6\n"
-        " 152:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-        " 154:	6817      	ldr	r7, [r2, #0]\n"
-        " 156:	9e05      	ldr	r6, [sp, #20]\n"
-        " 158:	9705      	str	r7, [sp, #20]\n"
-        " 15a:	46b6      	mov	lr, r6\n"
-        " 15c:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-        " 15e:	46c0      	nop			; (mov r8, r8)\n"
-        " 160:	6857      	ldr	r7, [r2, #4]\n"
-        " 162:	9e05      	ldr	r6, [sp, #20]\n"
-        " 164:	9705      	str	r7, [sp, #20]\n"
-        " 166:	46b6      	mov	lr, r6\n"
-        " 168:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}"
+        " 13a:	4e04      	ldr	r6, [pc, #16]	; (0x14c)\n"
+        " 13c:	19f6      	adds	r6, r6, r7\n"
+        " 13e:	9f00      	ldr	r7, [sp, #0]\n"
+        " 140:	607e      	str	r6, [r7, #4]\n"
+        " 142:	6897      	ldr	r7, [r2, #8]\n"
+        " 144:	9e05      	ldr	r6, [sp, #20]\n"
+        " 146:	9705      	str	r7, [sp, #20]\n"
+        " 148:	46b6      	mov	lr, r6\n"
+        " 14a:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        " 14c:	fedd ffff 	mrc2	15, 6, pc, cr13, cr15, {7}\n"
+        " 150:	6817      	ldr	r7, [r2, #0]\n"
+        " 152:	9e05      	ldr	r6, [sp, #20]\n"
+        " 154:	9705      	str	r7, [sp, #20]\n"
+        " 156:	46b6      	mov	lr, r6\n"
+        " 158:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        " 15a:	46c0      	nop			; (mov r8, r8)\n"
+        " 15c:	6857      	ldr	r7, [r2, #4]\n"
+        " 15e:	9e05      	ldr	r6, [sp, #20]\n"
+        " 160:	9705      	str	r7, [sp, #20]\n"
+        " 162:	46b6      	mov	lr, r6\n"
+        " 164:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}"
     >>,
     {_, RelevantBinary} = split_binary(Stream, 16#122),
     ?assertEqual(dump_to_bin(Dump), RelevantBinary).
@@ -1500,39 +1649,38 @@ call_bif_with_large_literal_integer_test() ->
             "   c:	bc05      	pop	{r0, r2}\n"
             "   e:	6bd6      	ldr	r6, [r2, #60]	; 0x3c\n"
             "  10:	b4c5      	push	{r0, r2, r6, r7}\n"
-            "  12:	4901      	ldr	r1, [pc, #4]	; (0x18)\n"
-            "  14:	e002      	b.n	0x1c\n"
-            "  16:	0000      	movs	r0, r0\n"
-            "  18:	e895 3b7f 	ldmia.w	r5, {r0, r1, r2, r3, r4, r5, r6, r8, r9, fp, ip, sp}\n"
-            "  1c:	47b0      	blx	r6\n"
-            "  1e:	4605      	mov	r5, r0\n"
-            "  20:	bcc5      	pop	{r0, r2, r6, r7}\n"
-            "  22:	b405      	push	{r0, r2}\n"
-            "  24:	b082      	sub	sp, #8\n"
-            "  26:	9500      	str	r5, [sp, #0]\n"
-            "  28:	2100      	movs	r1, #0\n"
-            "  2a:	2201      	movs	r2, #1\n"
-            "  2c:	6983      	ldr	r3, [r0, #24]\n"
-            "  2e:	47b8      	blx	r7\n"
-            "  30:	4607      	mov	r7, r0\n"
-            "  32:	b002      	add	sp, #8\n"
-            "  34:	bc05      	pop	{r0, r2}\n"
-            "  36:	2f00      	cmp	r7, #0\n"
-            "  38:	d105      	bne.n	0x46\n"
-            "  3a:	6997      	ldr	r7, [r2, #24]\n"
-            "  3c:	223c      	movs	r2, #60	; 0x3c\n"
-            "  3e:	9e05      	ldr	r6, [sp, #20]\n"
-            "  40:	9705      	str	r7, [sp, #20]\n"
-            "  42:	46b6      	mov	lr, r6\n"
-            "  44:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-            "  46:	6187      	str	r7, [r0, #24]"
+            "  12:	490b      	ldr	r1, [pc, #44]	; (0x40)\n"
+            "  14:	47b0      	blx	r6\n"
+            "  16:	4605      	mov	r5, r0\n"
+            "  18:	bcc5      	pop	{r0, r2, r6, r7}\n"
+            "  1a:	b405      	push	{r0, r2}\n"
+            "  1c:	b082      	sub	sp, #8\n"
+            "  1e:	9500      	str	r5, [sp, #0]\n"
+            "  20:	2100      	movs	r1, #0\n"
+            "  22:	2201      	movs	r2, #1\n"
+            "  24:	6983      	ldr	r3, [r0, #24]\n"
+            "  26:	47b8      	blx	r7\n"
+            "  28:	4607      	mov	r7, r0\n"
+            "  2a:	b002      	add	sp, #8\n"
+            "  2c:	bc05      	pop	{r0, r2}\n"
+            "  2e:	2f00      	cmp	r7, #0\n"
+            "  30:	d108      	bne.n	0x44\n"
+            "  32:	6997      	ldr	r7, [r2, #24]\n"
+            "  34:	2234      	movs	r2, #52	; 0x34\n"
+            "  36:	9e05      	ldr	r6, [sp, #20]\n"
+            "  38:	9705      	str	r7, [sp, #20]\n"
+            "  3a:	46b6      	mov	lr, r6\n"
+            "  3c:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+            "  3e:	0000      	movs	r0, r0\n"
+            "  40:	e895 3b7f 	ldmia.w	r5, {r0, r1, r2, r3, r4, r5, r6, r8, r9, fp, ip, sp}\n"
+            "  44:	6187      	str	r7, [r0, #24]"
         >>,
     ?assertEqual(dump_to_bin(Dump), Stream).
 
 get_list_test() ->
     State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
     {State1, Reg} = ?BACKEND:move_to_native_register(State0, {x_reg, 0}),
-    State2 = ?BACKEND:and_(State1, Reg, ?TERM_PRIMARY_CLEAR_MASK),
+    {State2, Reg} = ?BACKEND:and_(State1, {free, Reg}, ?TERM_PRIMARY_CLEAR_MASK),
     State3 = ?BACKEND:move_array_element(State2, Reg, 1, {y_reg, 1}),
     State4 = ?BACKEND:move_array_element(State3, Reg, 0, {y_reg, 0}),
     State5 = ?BACKEND:free_native_registers(State4, [Reg]),
@@ -1563,7 +1711,7 @@ is_integer_test() ->
                     ?BACKEND:jump_to_label(BSt0, Label)
                 end
             ),
-            MSt2 = ?BACKEND:and_(MSt1, Reg, ?TERM_PRIMARY_CLEAR_MASK),
+            {MSt2, Reg} = ?BACKEND:and_(MSt1, {free, Reg}, ?TERM_PRIMARY_CLEAR_MASK),
             MSt3 = ?BACKEND:move_array_element(MSt2, Reg, 0, Reg),
             ?BACKEND:if_block(
                 MSt3,
@@ -1625,7 +1773,7 @@ is_number_test() ->
             BSt1 = cond_jump_to_label(
                 {Reg, '&', ?TERM_PRIMARY_MASK, '!=', ?TERM_PRIMARY_BOXED}, Label, ?BACKEND, BSt0
             ),
-            BSt2 = ?BACKEND:and_(BSt1, Reg, ?TERM_PRIMARY_CLEAR_MASK),
+            {BSt2, Reg} = ?BACKEND:and_(BSt1, {free, Reg}, ?TERM_PRIMARY_CLEAR_MASK),
             BSt3 = ?BACKEND:move_array_element(BSt2, Reg, 0, Reg),
             cond_jump_to_label(
                 {'and', [
@@ -1862,48 +2010,46 @@ wait_timeout_test() ->
 
     Stream = ?BACKEND:stream(State10),
     Dump = <<
-        "   0:	a707      	add	r7, pc, #28	; (adr r7, 0x22)\n"
+        "   0:	a706      	add	r7, pc, #24	; (adr r7, 0x1c)\n"
         "   2:	3701      	adds	r7, #1\n"
         "   4:	9e00      	ldr	r6, [sp, #0]\n"
         "   6:	6077      	str	r7, [r6, #4]\n"
-        "   8:	4f00      	ldr	r7, [pc, #0]	; (0xc)\n"
-        "   a:	e001      	b.n	0x10\n"
-        "   c:	1388      	asrs	r0, r1, #14\n"
-        "   e:	0000      	movs	r0, r0\n"
-        "  10:	6f96      	ldr	r6, [r2, #120]	; 0x78\n"
-        "  14:	463a      	mov	r2, r7\n"
-        "  16:	232a      	movs	r3, #42	; 0x2a\n"
-        "  18:	9f05      	ldr	r7, [sp, #20]\n"
-        "  1a:	9605      	str	r6, [sp, #20]\n"
-        "  1c:	46be      	mov	lr, r7\n"
-        "  1e:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-        "  20:	46c0      	nop			; (mov r8, r8)\n"
-        "  22:	b5f2      	push	{r1, r4, r5, r6, r7, lr}\n"
-        "  24:	6d57      	ldr	r7, [r2, #84]	; 0x54\n"
-        "  26:	b405      	push	{r0, r2}\n"
-        "  28:	9902      	ldr	r1, [sp, #8]\n"
-        "  2a:	47b8      	blx	r7\n"
-        "  2c:	4607      	mov	r7, r0\n"
-        "  2e:	bc05      	pop	{r0, r2}\n"
-        "  30:	4287      	cmp	r7, r0\n"
-        "  32:	d001      	beq.n	0x38\n"
-        "  34:	4638      	mov	r0, r7\n"
-        "  36:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-        "  38:	2784      	movs	r7, #132	; 0x84\n"
-        "  3a:	59d7      	ldr	r7, [r2, r7]\n"
-        "  3c:	b405      	push	{r0, r2}\n"
-        "  3e:	2102      	movs	r1, #2\n"
-        "  40:	47b8      	blx	r7\n"
-        "  42:	4607      	mov	r7, r0\n"
-        "  44:	bc05      	pop	{r0, r2}\n"
-        "  46:	2f00      	cmp	r7, #0\n"
-        "  48:	d105      	bne.n	0x56\n"
-        "  4a:	6fd7      	ldr	r7, [r2, #124]	; 0x7c\n"
-        "  4c:	222a      	movs	r2, #42	; 0x2a\n"
-        "  4e:	9e05      	ldr	r6, [sp, #20]\n"
-        "  50:	9705      	str	r7, [sp, #20]\n"
-        "  52:	46b6      	mov	lr, r6\n"
-        "  54:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}"
+        "   8:	4f03      	ldr	r7, [pc, #12]	; (0x18)\n"
+        "   a:	6f96      	ldr	r6, [r2, #120]	; 0x78\n"
+        "   c:	463a      	mov	r2, r7\n"
+        "   e:	232a      	movs	r3, #42	; 0x2a\n"
+        "  10:	9f05      	ldr	r7, [sp, #20]\n"
+        "  12:	9605      	str	r6, [sp, #20]\n"
+        "  14:	46be      	mov	lr, r7\n"
+        "  16:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        "  18:	1388      	asrs	r0, r1, #14\n"
+        "  1a:	0000      	movs	r0, r0\n"
+        "  1c:	b5f2      	push	{r1, r4, r5, r6, r7, lr}\n"
+        "  1e:	6d57      	ldr	r7, [r2, #84]	; 0x54\n"
+        "  20:	b405      	push	{r0, r2}\n"
+        "  22:	9902      	ldr	r1, [sp, #8]\n"
+        "  24:	47b8      	blx	r7\n"
+        "  26:	4607      	mov	r7, r0\n"
+        "  28:	bc05      	pop	{r0, r2}\n"
+        "  2a:	4287      	cmp	r7, r0\n"
+        "  2c:	d001      	beq.n	0x32\n"
+        "  2e:	4638      	mov	r0, r7\n"
+        "  30:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        "  32:	2784      	movs	r7, #132	; 0x84\n"
+        "  34:	59d7      	ldr	r7, [r2, r7]\n"
+        "  36:	b405      	push	{r0, r2}\n"
+        "  38:	2102      	movs	r1, #2\n"
+        "  3a:	47b8      	blx	r7\n"
+        "  3c:	4607      	mov	r7, r0\n"
+        "  3e:	bc05      	pop	{r0, r2}\n"
+        "  40:	2f00      	cmp	r7, #0\n"
+        "  42:	d105      	bne.n	0x50\n"
+        "  44:	6fd7      	ldr	r7, [r2, #124]	; 0x7c\n"
+        "  46:	222a      	movs	r2, #42	; 0x2a\n"
+        "  48:	9e05      	ldr	r6, [sp, #20]\n"
+        "  4a:	9705      	str	r7, [sp, #20]\n"
+        "  4c:	46b6      	mov	lr, r6\n"
+        "  4e:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}"
     >>,
     ?assertEqual(dump_to_bin(Dump), Stream).
 
@@ -2170,7 +2316,7 @@ call_fun_test() ->
             ])
         end
     ),
-    State5 = ?BACKEND:and_(State4, RegCopy, ?TERM_PRIMARY_CLEAR_MASK),
+    {State5, RegCopy} = ?BACKEND:and_(State4, {free, RegCopy}, ?TERM_PRIMARY_CLEAR_MASK),
     State6 = ?BACKEND:move_array_element(State5, RegCopy, 0, RegCopy),
     State7 = ?BACKEND:if_block(
         State6, {RegCopy, '&', ?TERM_BOXED_TAG_MASK, '!=', ?TERM_BOXED_FUN}, fun(BSt0) ->
@@ -2207,64 +2353,61 @@ call_fun_test() ->
         "  24:	2403      	movs	r4, #3\n"
         "  26:	4025      	ands	r5, r4\n"
         "  28:	2d02      	cmp	r5, #2\n"
-        "  2a:	d00c      	beq.n	0x46\n"
+        "  2a:	d009      	beq.n	0x40\n"
         "  2c:	6cd7      	ldr	r7, [r2, #76]	; 0x4c\n"
         "  2e:	b082      	sub	sp, #8\n"
         "  30:	9600      	str	r6, [sp, #0]\n"
         "  32:	9902      	ldr	r1, [sp, #8]\n"
         "  34:	222e      	movs	r2, #46	; 0x2e\n"
-        "  36:	4b01      	ldr	r3, [pc, #4]	; (0x3c)\n"
-        "  38:	e002      	b.n	0x40\n"
-        "  3a:	0000      	movs	r0, r0\n"
-        "  3c:	018b      	lsls	r3, r1, #6\n"
-        "  3e:	0000      	movs	r0, r0\n"
-        "  40:	47b8      	blx	r7\n"
-        "  42:	b002      	add	sp, #8\n"
-        "  44:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-        "  46:	2503      	movs	r5, #3\n"
-        "  48:	43ae      	bics	r6, r5\n"
-        "  4a:	6836      	ldr	r6, [r6, #0]\n"
-        "  4c:	4635      	mov	r5, r6\n"
-        "  4e:	243f      	movs	r4, #63	; 0x3f\n"
-        "  50:	4025      	ands	r5, r4\n"
-        "  52:	2d14      	cmp	r5, #20\n"
-        "  54:	d00b      	beq.n	0x6e\n"
-        "  56:	6cd7      	ldr	r7, [r2, #76]	; 0x4c\n"
-        "  58:	b082      	sub	sp, #8\n"
-        "  5a:	9600      	str	r6, [sp, #0]\n"
-        "  5c:	9902      	ldr	r1, [sp, #8]\n"
-        "  5e:	2258      	movs	r2, #88	; 0x58\n"
-        "  60:	4b00      	ldr	r3, [pc, #0]	; (0x64)\n"
-        "  62:	e001      	b.n	0x68\n"
-        "  64:	018b      	lsls	r3, r1, #6\n"
-        "  66:	0000      	movs	r0, r0\n"
-        "  68:	47b8      	blx	r7\n"
-        "  6a:	b002      	add	sp, #8\n"
-        "  6c:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-        "  6e:	9d00      	ldr	r5, [sp, #0]\n"
-        "  70:	682e      	ldr	r6, [r5, #0]\n"
-        "  72:	6836      	ldr	r6, [r6, #0]\n"
-        "  74:	0636      	lsls	r6, r6, #24\n"
-        "  76:	4d05      	ldr	r5, [pc, #20]	; (0x8c)\n"
-        "  78:	432e      	orrs	r6, r5\n"
-        "  7a:	65c6      	str	r6, [r0, #92]	; 0x5c\n"
-        "  7c:	2680      	movs	r6, #128	; 0x80\n"
-        "  7e:	5996      	ldr	r6, [r2, r6]\n"
-        "  80:	463a      	mov	r2, r7\n"
-        "  82:	2300      	movs	r3, #0\n"
-        "  84:	9f05      	ldr	r7, [sp, #20]\n"
-        "  86:	9605      	str	r6, [sp, #20]\n"
-        "  88:	46be      	mov	lr, r7\n"
-        "  8a:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
-        "  8c:	0240      	lsls	r0, r0, #9\n"
-        "  8e:	0000      	movs	r0, r0\n"
-        "  90:	b5f2      	push	{r1, r4, r5, r6, r7, lr}"
+        "  36:	23ff      	movs	r3, #255	; 0xff\n"
+        "  38:	338c      	adds	r3, #140	; 0x8c\n"
+        "  3a:	47b8      	blx	r7\n"
+        "  3c:	b002      	add	sp, #8\n"
+        "  3e:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        "  40:	2503      	movs	r5, #3\n"
+        "  42:	43ae      	bics	r6, r5\n"
+        "  44:	6836      	ldr	r6, [r6, #0]\n"
+        "  46:	4635      	mov	r5, r6\n"
+        "  48:	243f      	movs	r4, #63	; 0x3f\n"
+        "  4a:	4025      	ands	r5, r4\n"
+        "  4c:	2d14      	cmp	r5, #20\n"
+        "  4e:	d009      	beq.n	0x64\n"
+        "  50:	6cd7      	ldr	r7, [r2, #76]	; 0x4c\n"
+        "  52:	b082      	sub	sp, #8\n"
+        "  54:	9600      	str	r6, [sp, #0]\n"
+        "  56:	9902      	ldr	r1, [sp, #8]\n"
+        "  58:	2252      	movs	r2, #82	; 0x52\n"
+        "  5a:	23ff      	movs	r3, #255	; 0xff\n"
+        "  5c:	338c      	adds	r3, #140	; 0x8c\n"
+        "  5e:	47b8      	blx	r7\n"
+        "  60:	b002      	add	sp, #8\n"
+        "  62:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        "  64:	9d00      	ldr	r5, [sp, #0]\n"
+        "  66:	682e      	ldr	r6, [r5, #0]\n"
+        "  68:	6836      	ldr	r6, [r6, #0]\n"
+        "  6a:	0636      	lsls	r6, r6, #24\n"
+        "  6c:	4d05      	ldr	r5, [pc, #20]	; (0x84)\n"
+        "  6e:	432e      	orrs	r6, r5\n"
+        "  70:	65c6      	str	r6, [r0, #92]	; 0x5c\n"
+        "  72:	2680      	movs	r6, #128	; 0x80\n"
+        "  74:	5996      	ldr	r6, [r2, r6]\n"
+        "  76:	463a      	mov	r2, r7\n"
+        "  78:	2300      	movs	r3, #0\n"
+        "  7a:	9f05      	ldr	r7, [sp, #20]\n"
+        "  7c:	9605      	str	r6, [sp, #20]\n"
+        "  7e:	46be      	mov	lr, r7\n"
+        "  80:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+        "  82:	0000      	movs	r0, r0\n"
+        "  84:	0220      	lsls	r0, r4, #8\n"
+        "  86:	0000      	movs	r0, r0\n"
+        "  88:	b5f2      	push	{r1, r4, r5, r6, r7, lr}"
     >>,
     ?assertEqual(dump_to_bin(Dump), Stream).
 
 move_to_vm_register_test0(State, Source, Dest, Dump) ->
     State1 = ?BACKEND:move_to_vm_register(State, Source, Dest),
-    Stream = ?BACKEND:stream(State1),
+    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+    Stream = ?BACKEND:stream(State2),
     ?assertEqual(dump_to_bin(Dump), Stream).
 
 move_to_vm_register_test_() ->
@@ -2277,88 +2420,101 @@ move_to_vm_register_test_() ->
                 ?_test(begin
                     move_to_vm_register_test0(State0, 0, {x_reg, 0}, <<
                         "   0:	2700      	movs	r7, #0\n"
-                        "   2:	6187      	str	r7, [r0, #24]"
+                        "   2:	6187      	str	r7, [r0, #24]\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 0, {x_reg, extra}, <<
                         "   0:	2700      	movs	r7, #0\n"
-                        "   2:	6587      	str	r7, [r0, #88]	; 0x58"
+                        "   2:	6587      	str	r7, [r0, #88]	; 0x58\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 0, {ptr, r6}, <<
                         "   0:	2700      	movs	r7, #0\n"
-                        "   2:	6037      	str	r7, [r6, #0]"
+                        "   2:	6037      	str	r7, [r6, #0]\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 0, {y_reg, 2}, <<
                         "   0:	2600      	movs	r6, #0\n"
                         "   2:	6947      	ldr	r7, [r0, #20]\n"
-                        "   4:	60be      	str	r6, [r7, #8]"
+                        "   4:	60be      	str	r6, [r7, #8]\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 0, {y_reg, 20}, <<
                         "   0:	2600      	movs	r6, #0\n"
                         "   2:	6947      	ldr	r7, [r0, #20]\n"
-                        "   4:	653e      	str	r6, [r7, #80]	; 0x50"
+                        "   4:	653e      	str	r6, [r7, #80]	; 0x50\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 %% Test: Immediate to x_reg
                 ?_test(begin
                     move_to_vm_register_test0(State0, 42, {x_reg, 0}, <<
                         "   0:	272a      	movs	r7, #42	; 0x2a\n"
-                        "   2:	6187      	str	r7, [r0, #24]"
+                        "   2:	6187      	str	r7, [r0, #24]\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 42, {x_reg, extra}, <<
                         "   0:	272a      	movs	r7, #42	; 0x2a\n"
-                        "   2:	6587      	str	r7, [r0, #88]	; 0x58"
+                        "   2:	6587      	str	r7, [r0, #88]	; 0x58\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 42, {y_reg, 2}, <<
                         "   0:	262a      	movs	r6, #42	; 0x2a\n"
                         "   2:	6947      	ldr	r7, [r0, #20]\n"
-                        "   4:	60be      	str	r6, [r7, #8]"
+                        "   4:	60be      	str	r6, [r7, #8]\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 42, {y_reg, 20}, <<
                         "   0:	262a      	movs	r6, #42	; 0x2a\n"
                         "   2:	6947      	ldr	r7, [r0, #20]\n"
-                        "   4:	653e      	str	r6, [r7, #80]	; 0x50"
+                        "   4:	653e      	str	r6, [r7, #80]	; 0x50\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 %% Test: Immediate to ptr
                 ?_test(begin
                     move_to_vm_register_test0(State0, 99, {ptr, r3}, <<
                         "   0:	2763      	movs	r7, #99	; 0x63\n"
-                        "   2:	601f      	str	r7, [r3, #0]"
+                        "   2:	601f      	str	r7, [r3, #0]\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 %% Test: x_reg to x_reg
                 ?_test(begin
                     move_to_vm_register_test0(State0, {x_reg, 1}, {x_reg, 2}, <<
                         "   0:	69c7      	ldr	r7, [r0, #28]\n"
-                        "   2:	6207      	str	r7, [r0, #32]"
+                        "   2:	6207      	str	r7, [r0, #32]\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 %% Test: x_reg to ptr
                 ?_test(begin
                     move_to_vm_register_test0(State0, {x_reg, 1}, {ptr, r1}, <<
                         "   0:	69c7      	ldr	r7, [r0, #28]\n"
-                        "   2:	600f      	str	r7, [r1, #0]"
+                        "   2:	600f      	str	r7, [r1, #0]\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 %% Test: ptr to x_reg
                 ?_test(begin
                     move_to_vm_register_test0(State0, {ptr, r4}, {x_reg, 3}, <<
                         "   0:	6827      	ldr	r7, [r4, #0]\n"
-                        "   2:	6247      	str	r7, [r0, #36]	; 0x24"
+                        "   2:	6247      	str	r7, [r0, #36]	; 0x24\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 %% Test: x_reg to y_reg
@@ -2366,7 +2522,8 @@ move_to_vm_register_test_() ->
                     move_to_vm_register_test0(State0, {x_reg, 0}, {y_reg, 1}, <<
                         "   0:	6987      	ldr	r7, [r0, #24]\n"
                         "   2:	6946      	ldr	r6, [r0, #20]\n"
-                        "   4:	6077      	str	r7, [r6, #4]"
+                        "   4:	6077      	str	r7, [r6, #4]\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 %% Test: y_reg to x_reg
@@ -2374,7 +2531,8 @@ move_to_vm_register_test_() ->
                     move_to_vm_register_test0(State0, {y_reg, 0}, {x_reg, 3}, <<
                         "   0:	6946      	ldr	r6, [r0, #20]\n"
                         "   2:	6837      	ldr	r7, [r6, #0]\n"
-                        "   4:	6247      	str	r7, [r0, #36]	; 0x24"
+                        "   4:	6247      	str	r7, [r0, #36]	; 0x24\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 %% Test: y_reg to y_reg
@@ -2382,41 +2540,47 @@ move_to_vm_register_test_() ->
                     move_to_vm_register_test0(State0, {y_reg, 1}, {x_reg, 3}, <<
                         "   0:	6946      	ldr	r6, [r0, #20]\n"
                         "   2:	6877      	ldr	r7, [r6, #4]\n"
-                        "   4:	6247      	str	r7, [r0, #36]	; 0x24"
+                        "   4:	6247      	str	r7, [r0, #36]	; 0x24\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 %% Test: Native register to x_reg
                 ?_test(begin
                     move_to_vm_register_test0(State0, r5, {x_reg, 0}, <<
-                        "   0:	6185      	str	r5, [r0, #24]"
+                        "   0:	6185      	str	r5, [r0, #24]\n"
+                        "   2:	e07d      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, r6, {x_reg, extra}, <<
-                        "   0:	6586      	str	r6, [r0, #88]	; 0x58"
+                        "   0:	6586      	str	r6, [r0, #88]	; 0x58\n"
+                        "   2:	e07d      	b.n	0x100"
                     >>)
                 end),
                 %% Test: Native register to ptr
                 ?_test(begin
                     move_to_vm_register_test0(State0, r4, {ptr, r3}, <<
-                        "   0:	601c      	str	r4, [r3, #0]"
+                        "   0:	601c      	str	r4, [r3, #0]\n"
+                        "   2:	e07d      	b.n	0x100"
                     >>)
                 end),
                 %% Test: Native register to y_reg
                 ?_test(begin
                     move_to_vm_register_test0(State0, r1, {y_reg, 0}, <<
                         "   0:	6947      	ldr	r7, [r0, #20]\n"
-                        "   2:	6039      	str	r1, [r7, #0]"
+                        "   2:	6039      	str	r1, [r7, #0]\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>)
                 end),
                 %% Test: Large immediate to x_reg (32-bit literal pool, aligned case)
                 ?_test(begin
                     move_to_vm_register_test0(State0, 16#12345678, {x_reg, 0}, <<
-                        "   0:	4f00      	ldr	r7, [pc, #0]	; (0x4)\n"
-                        "   2:	e001      	b.n	0x8\n"
-                        "   4:	5678      	ldrsb	r0, [r7, r1]\n"
-                        "   6:	1234      	asrs	r4, r6, #8\n"
-                        "   8:	6187      	str	r7, [r0, #24]"
+                        "   0:	4f01      	ldr	r7, [pc, #4]	; (0x8)\n"
+                        "   2:	6187      	str	r7, [r0, #24]\n"
+                        "   4:	e07c      	b.n	0x100\n"
+                        "   6:	0000      	movs	r0, r0\n"
+                        "   8:	5678      	ldrsb	r0, [r7, r1]\n"
+                        "   a:	1234      	asrs	r4, r6, #8"
                     >>)
                 end),
                 %% Test: Large immediate to x_reg (32-bit literal pool, unaligned case)
@@ -2425,55 +2589,57 @@ move_to_vm_register_test_() ->
                     State1 = ?BACKEND:move_to_vm_register(State0, r1, {ptr, r3}),
                     %% Then do large immediate which should handle unaligned case
                     State2 = ?BACKEND:move_to_vm_register(State1, 16#12345678, {x_reg, 0}),
-                    Stream = ?BACKEND:stream(State2),
+                    State3 = ?BACKEND:jump_to_offset(State2, 16#100),
+                    Stream = ?BACKEND:stream(State3),
                     Expected = dump_to_bin(<<
                         "   0:	6019      	str	r1, [r3, #0]\n"
                         "   2:	4f01      	ldr	r7, [pc, #4]	; (0x8)\n"
-                        "   4:	e002      	b.n	0xc\n"
-                        "   6:	0000      	movs	r0, r0\n"
+                        "   4:	6187      	str	r7, [r0, #24]\n"
+                        "   6:	e07b      	b.n	0x100\n"
                         "   8:	5678      	ldrsb	r0, [r7, r1]\n"
-                        "   a:	1234      	asrs	r4, r6, #8\n"
-                        "   c:	6187      	str	r7, [r0, #24]"
+                        "   a:	1234      	asrs	r4, r6, #8"
                     >>),
                     ?assertEqual(Expected, Stream)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 16#12345678, {x_reg, extra}, <<
-                        "   0:	4f00      	ldr	r7, [pc, #0]	; (0x4)\n"
-                        "   2:	e001      	b.n	0x8\n"
-                        "   4:	5678      	ldrsb	r0, [r7, r1]\n"
-                        "   6:	1234      	asrs	r4, r6, #8\n"
-                        "   8:	6587      	str	r7, [r0, #88]	; 0x58"
+                        "   0:	4f01      	ldr	r7, [pc, #4]	; (0x8)\n"
+                        "   2:	6587      	str	r7, [r0, #88]	; 0x58\n"
+                        "   4:	e07c      	b.n	0x100\n"
+                        "   6:	0000      	movs	r0, r0\n"
+                        "   8:	5678      	ldrsb	r0, [r7, r1]\n"
+                        "   a:	1234      	asrs	r4, r6, #8"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 16#12345678, {y_reg, 2}, <<
-                        "   0:	4f00      	ldr	r7, [pc, #0]	; (0x4)\n"
-                        "   2:	e001      	b.n	0x8\n"
-                        "   4:	5678      	ldrsb	r0, [r7, r1]\n"
-                        "   6:	1234      	asrs	r4, r6, #8\n"
-                        "   8:	6946      	ldr	r6, [r0, #20]\n"
-                        "   a:	60b7      	str	r7, [r6, #8]"
+                        "   0:	4f01      	ldr	r7, [pc, #4]	; (0x8)\n"
+                        "   2:	6946      	ldr	r6, [r0, #20]\n"
+                        "   4:	60b7      	str	r7, [r6, #8]\n"
+                        "   6:	e07b      	b.n	0x100\n"
+                        "   8:	5678      	ldrsb	r0, [r7, r1]\n"
+                        "   a:	1234      	asrs	r4, r6, #8"
                     >>)
                 end),
                 ?_test(begin
                     move_to_vm_register_test0(State0, 16#12345678, {y_reg, 20}, <<
-                        "   0:	4f00      	ldr	r7, [pc, #0]	; (0x4)\n"
-                        "   2:	e001      	b.n	0x8\n"
-                        "   4:	5678      	ldrsb	r0, [r7, r1]\n"
-                        "   6:	1234      	asrs	r4, r6, #8\n"
-                        "   8:	6946      	ldr	r6, [r0, #20]\n"
-                        "   a:	6537      	str	r7, [r6, #80]	; 0x50"
+                        "   0:	4f01      	ldr	r7, [pc, #4]	; (0x8)\n"
+                        "   2:	6946      	ldr	r6, [r0, #20]\n"
+                        "   4:	6537      	str	r7, [r6, #80]	; 0x50\n"
+                        "   6:	e07b      	b.n	0x100\n"
+                        "   8:	5678      	ldrsb	r0, [r7, r1]\n"
+                        "   a:	1234      	asrs	r4, r6, #8"
                     >>)
                 end),
                 %% Test: Large immediate to ptr
                 ?_test(begin
                     move_to_vm_register_test0(State0, 16#12345678, {ptr, r3}, <<
-                        "   0:	4f00      	ldr	r7, [pc, #0]	; (0x4)\n"
-                        "   2:	e001      	b.n	0x8\n"
-                        "   4:	5678      	ldrsb	r0, [r7, r1]\n"
-                        "   6:	1234      	asrs	r4, r6, #8\n"
-                        "   8:	601f      	str	r7, [r3, #0]"
+                        "   0:	4f01      	ldr	r7, [pc, #4]	; (0x8)\n"
+                        "   2:	601f      	str	r7, [r3, #0]\n"
+                        "   4:	e07c      	b.n	0x100\n"
+                        "   6:	0000      	movs	r0, r0\n"
+                        "   8:	5678      	ldrsb	r0, [r7, r1]\n"
+                        "   a:	1234      	asrs	r4, r6, #8"
                     >>)
                 end),
                 %% Test: x_reg to y_reg (high index)
@@ -2481,7 +2647,8 @@ move_to_vm_register_test_() ->
                     move_to_vm_register_test0(State0, {x_reg, 15}, {y_reg, 31}, <<
                         "   0:	6d47      	ldr	r7, [r0, #84]	; 0x54\n"
                         "   2:	6946      	ldr	r6, [r0, #20]\n"
-                        "   4:	67f7      	str	r7, [r6, #124]	; 0x7c"
+                        "   4:	67f7      	str	r7, [r6, #124]	; 0x7c\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 %% Test: y_reg to x_reg (high index)
@@ -2489,7 +2656,8 @@ move_to_vm_register_test_() ->
                     move_to_vm_register_test0(State0, {y_reg, 31}, {x_reg, 15}, <<
                         "   0:	6946      	ldr	r6, [r0, #20]\n"
                         "   2:	6ff7      	ldr	r7, [r6, #124]	; 0x7c\n"
-                        "   4:	6547      	str	r7, [r0, #84]	; 0x54"
+                        "   4:	6547      	str	r7, [r0, #84]	; 0x54\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 %% Test: Large y_reg index (32) that exceeds str immediate offset limit
@@ -2499,7 +2667,8 @@ move_to_vm_register_test_() ->
                         "   2:	6947      	ldr	r7, [r0, #20]\n"
                         "   4:	2580      	movs	r5, #128	; 0x80\n"
                         "   6:	443d      	add	r5, r7\n"
-                        "   8:	602e      	str	r6, [r5, #0]"
+                        "   8:	602e      	str	r6, [r5, #0]\n"
+                        "   a:	e079      	b.n	0x100"
                     >>)
                 end),
                 %% Test: Negative immediate to x_reg
@@ -2507,7 +2676,8 @@ move_to_vm_register_test_() ->
                     move_to_vm_register_test0(State0, -1, {x_reg, 0}, <<
                         "   0:	2701      	movs	r7, #1\n"
                         "   2:	427f      	negs	r7, r7\n"
-                        "   4:	6187      	str	r7, [r0, #24]"
+                        "   4:	6187      	str	r7, [r0, #24]\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end)
             ]
@@ -2770,12 +2940,13 @@ move_to_native_register_test_() ->
                 %% move_to_native_register/2: -256 (boundary case, should use literal pool)
                 ?_test(begin
                     {State1, Reg} = ?BACKEND:move_to_native_register(State0, -256),
-                    Stream = ?BACKEND:stream(State1),
+                    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+                    Stream = ?BACKEND:stream(State2),
                     ?assertEqual(r7, Reg),
                     Dump = <<
-                        "   0:	4f00      	ldr	r7, [pc, #0]	; (0x4)\n"
-                        "   2:	e001      	b.n	0x8\n"
-                        "   4:	ff00 ffff 	vmaxnm.f32	<illegal reg q7.5>, q8, <illegal reg q15.5>"
+                        "   0:	27ff      	movs	r7, #255	; 0xff\n"
+                        "   2:	43ff      	mvns	r7, r7\n"
+                        "   4:	e07c      	b.n	0x100"
                     >>,
                     ?assertEqual(dump_to_bin(Dump), Stream)
                 end),
@@ -2872,13 +3043,87 @@ move_to_native_register_test_() ->
                         "   a:	61f5      	str	r5, [r6, #28]"
                     >>,
                     ?assertEqual(dump_to_bin(Dump), Stream)
+                end),
+                %% Force literal pool flush
+                ?_test(begin
+                    State1 = lists:foldl(
+                        fun(X, AccSt0) ->
+                            {AccSt1, RegA} = ?BACKEND:move_to_native_register(AccSt0, X),
+                            AccSt2 = ?BACKEND:add(AccSt1, RegA, RegA),
+                            AccSt3 = ?BACKEND:add(AccSt2, RegA, RegA),
+                            AccSt4 = ?BACKEND:add(AccSt3, RegA, RegA),
+                            ?BACKEND:free_native_registers(AccSt4, [RegA])
+                        end,
+                        State0,
+                        lists:seq(1025, 1090)
+                    ),
+                    State2 = ?BACKEND:flush(State1),
+                    Stream = ?BACKEND:stream(State2),
+                    {_, LoadAndBranch0} = split_binary(Stream, 16#210),
+                    {LoadAndBranch, _} = split_binary(LoadAndBranch0, 10),
+                    LoadAndBranchDump = <<
+                        " 210:	4f38      	ldr	r7, [pc, #224]	; (0x2f4)\n"
+                        " 212:	e071      	b.n	0x2f8\n"
+                        " 214:  0401        .dword 0x0401\n\n"
+                        " 216:  0000        .dword 0x0000\n\n"
+                        " 218:  0402        .dword 0x0402\n\n"
+                    >>,
+                    ?assertEqual(dump_to_bin(LoadAndBranchDump), LoadAndBranch),
+                    {_, Continuation0} = split_binary(Stream, 16#2f8),
+                    {Continuation, _} = split_binary(Continuation0, 8),
+                    ContinuationDump = <<
+                        " 2f8:   19ff       adds    r7, r7, r7\n"
+                        " 2fa:   19ff       adds    r7, r7, r7\n"
+                        " 2fc:   19ff       adds    r7, r7, r7\n"
+                        " 2fe:   4f02       ldr	    r7, [pc, #8]	; (0x308)"
+                    >>,
+                    ?assertEqual(dump_to_bin(ContinuationDump), Continuation)
+                end),
+                ?_test(begin
+                    % Different alignment
+                    {State1, _RegB} = ?BACKEND:move_to_native_register(State0, 0),
+                    State2 = lists:foldl(
+                        fun(X, AccSt0) ->
+                            {AccSt1, RegA} = ?BACKEND:move_to_native_register(AccSt0, X),
+                            AccSt2 = ?BACKEND:add(AccSt1, RegA, RegA),
+                            AccSt3 = ?BACKEND:add(AccSt2, RegA, RegA),
+                            AccSt4 = ?BACKEND:add(AccSt3, RegA, RegA),
+                            ?BACKEND:free_native_registers(AccSt4, [RegA])
+                        end,
+                        State1,
+                        lists:seq(1025, 1090)
+                    ),
+                    State3 = ?BACKEND:flush(State2),
+                    Stream = ?BACKEND:stream(State3),
+                    {_, LoadAndBranch0} = split_binary(Stream, 16#212),
+                    {LoadAndBranch, _} = split_binary(LoadAndBranch0, 10),
+                    LoadAndBranchDump = <<
+                        " 212:   4e39       ldr	r6, [pc, #228]	; (0x2f8)\n"
+                        " 214:   e072       b.n	0x2fc\n"
+                        % padding
+                        " 216:   ffff       .dword 0xffff\n\n"
+                        " 218:   0401       .dword 0x401\n\n"
+                        " 21a:   0000       .dword 0x000"
+                    >>,
+                    ?assertEqual(dump_to_bin(LoadAndBranchDump), LoadAndBranch),
+                    {_, Continuation0} = split_binary(Stream, 16#2fc),
+                    {Continuation, _} = split_binary(Continuation0, 8),
+                    ContinuationDump = <<
+                        " 2fc:   19b6       adds    r6, r6, r6\n"
+                        " 2fe:   19b6       adds    r6, r6, r6\n"
+                        " 300:   19b6       adds    r6, r6, r6\n"
+                        " 302:   4e02      	ldr     r6, [pc, #8]	; (0x30c)"
+                    >>,
+                    ?assertEqual(dump_to_bin(ContinuationDump), Continuation)
                 end)
             ]
         end}.
 
 add_test0(State0, Reg, Imm, Dump) ->
     State1 = ?BACKEND:add(State0, Reg, Imm),
-    Stream = ?BACKEND:stream(State1),
+    % Force emission of literal pool
+    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+    Stream = ?BACKEND:stream(State2),
     ?assertEqual(dump_to_bin(Dump), Stream).
 
 add_test_() ->
@@ -2890,21 +3135,42 @@ add_test_() ->
             [
                 ?_test(begin
                     add_test0(State0, r2, 2, <<
-                        "   0:	3202      	adds	r2, #2"
+                        "   0:	3202      	adds	r2, #2\n"
+                        "   2:	e07d      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     add_test0(State0, r2, 256, <<
-                        "   0:	4f00      	ldr	r7, [pc, #0]	; (0x4)\n"
-                        "   2:	e001      	b.n	0x8\n"
-                        "   4:	0100      	lsls	r0, r0, #4\n"
-                        "   6:	0000      	movs	r0, r0\n"
-                        "   8:	19d2      	adds	r2, r2, r7"
+                        "   0:	27ff      	movs	r7, #255	; 0xff\n"
+                        "   2:	3701      	adds	r7, #1\n"
+                        "   4:	19d2      	adds	r2, r2, r7\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     add_test0(State0, r2, r3, <<
-                        "   0:	18d2      	adds	r2, r2, r3"
+                        "   0:	18d2      	adds	r2, r2, r3\n"
+                        "   2:	e07d      	b.n	0x100"
+                    >>)
+                end),
+                ?_test(begin
+                    % Test with a value that requires literal pool (not encodable as shifted byte)
+                    add_test0(State0, r2, 16#12345, <<
+                        "   0:	4f01      	ldr	r7, [pc, #4]	; (0x8)\n"
+                        "   2:	19d2      	adds	r2, r2, r7\n"
+                        "   4:	e07c      	b.n	0x100\n"
+                        "   6:	0000      	movs	r0, r0\n"
+                        "   8:	2345      	movs	r3, #69	; 0x45\n"
+                        "   a:	0001      	movs	r1, r0"
+                    >>)
+                end),
+                ?_test(begin
+                    % Test with 459 which can be encoded as 255 + 204
+                    add_test0(State0, r2, 459, <<
+                        "   0:	27ff      	movs	r7, #255	; 0xff\n"
+                        "   2:	37cc      	adds	r7, #204	; 0xcc\n"
+                        "   4:	19d2      	adds	r2, r2, r7\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end)
             ]
@@ -2912,7 +3178,9 @@ add_test_() ->
 
 sub_test0(State0, Reg, Imm, Dump) ->
     State1 = ?BACKEND:sub(State0, Reg, Imm),
-    Stream = ?BACKEND:stream(State1),
+    % Force emission of literal pool
+    State2 = ?BACKEND:jump_to_offset(State1, 16#100),
+    Stream = ?BACKEND:stream(State2),
     ?assertEqual(dump_to_bin(Dump), Stream).
 
 sub_test_() ->
@@ -2924,21 +3192,33 @@ sub_test_() ->
             [
                 ?_test(begin
                     sub_test0(State0, r2, 2, <<
-                        "   0:	3a02      	subs	r2, #2"
+                        "   0:	3a02      	subs	r2, #2\n"
+                        "   2:	e07d      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     sub_test0(State0, r2, 256, <<
-                        "   0:	4f00      	ldr	r7, [pc, #0]	; (0x4)\n"
-                        "   2:	e001      	b.n	0x8\n"
-                        "   4:	0100      	lsls	r0, r0, #4\n"
-                        "   6:	0000      	movs	r0, r0\n"
-                        "   8:	1bd2      	subs	r2, r2, r7"
+                        "   0:	27ff      	movs	r7, #255	; 0xff\n"
+                        "   2:	3701      	adds	r7, #1\n"
+                        "   4:	1bd2      	subs	r2, r2, r7\n"
+                        "   6:	e07b      	b.n	0x100"
                     >>)
                 end),
                 ?_test(begin
                     sub_test0(State0, r2, r3, <<
-                        "   0:	1ad2      	subs	r2, r2, r3"
+                        "   0:	1ad2      	subs	r2, r2, r3\n"
+                        "   2:	e07d      	b.n	0x110"
+                    >>)
+                end),
+                ?_test(begin
+                    % Test with a value that requires literal pool (not encodable as shifted byte)
+                    sub_test0(State0, r2, 16#ABCDE, <<
+                        "   0:	4f01      	ldr	r7, [pc, #4]	; (0x8)\n"
+                        "   2:	1bd2      	subs	r2, r2, r7\n"
+                        "   4:	e07c      	b.n	0x100\n"
+                        "   6:	0000      	movs	r0, r0\n"
+                        "   8:	bcde      	pop	{r1, r2, r3, r4, r6, r7, pc}\n"
+                        "   a:	000a      	movs	r2, r1"
                     >>)
                 end)
             ]
@@ -3167,7 +3447,7 @@ and_register_exhaustion_negative_test() ->
     {State5, r3} = ?BACKEND:move_to_native_register(State4, {x_reg, 4}),
     {StateNoRegs, r1} = ?BACKEND:move_to_native_register(State5, {x_reg, 5}),
     % Test negative immediate (-4) which should use BICS with r0 as temp
-    StateResult = ?BACKEND:and_(StateNoRegs, r7, -4),
+    {StateResult, r7} = ?BACKEND:and_(StateNoRegs, {free, r7}, -4),
     Stream = ?BACKEND:stream(StateResult),
     ExpectedDump = <<
         "   0:	6987      	ldr	r7, [r0, #24]\n"
@@ -3193,7 +3473,7 @@ and_register_exhaustion_positive_test() ->
     {State5, r3} = ?BACKEND:move_to_native_register(State4, {x_reg, 4}),
     {StateNoRegs, r1} = ?BACKEND:move_to_native_register(State5, {x_reg, 5}),
     % Test positive immediate (0x3F) which should use ANDS with r0 as temp
-    StateResult = ?BACKEND:and_(StateNoRegs, r7, 16#3F),
+    {StateResult, r7} = ?BACKEND:and_(StateNoRegs, {free, r7}, 16#3F),
     Stream = ?BACKEND:stream(StateResult),
     ExpectedDump = <<
         "   0:	6987      	ldr	r7, [r0, #24]\n"
@@ -3239,23 +3519,36 @@ alloc_boxed_integer_fragment_large_test() ->
     {State1, ResultReg} = ?BACKEND:call_primitive(State0, ?PRIM_ALLOC_BOXED_INTEGER_FRAGMENT, [
         ctx, {avm_int64_t, 16#123456789ABCDEF0}
     ]),
+    % Add a call primitive last to emit literal pool
+    State2 = ?BACKEND:call_primitive_last(State1, ?PRIM_RAISE_ERROR_TUPLE, [
+        ctx, jit_state, offset, ?BADMATCH_ATOM, {free, ResultReg}
+    ]),
     ?assertEqual(r7, ResultReg),
-    Stream = ?BACKEND:stream(State1),
+    Stream = ?BACKEND:stream(State2),
     Dump =
         <<
-            "   0:	6bd7      	ldr	r7, [r2, #60]	; 0x3c\n"
+            "   0:	6bd7      	ldr	r7, [r2, #60]	@ 0x3c\n"
             "   2:	b405      	push	{r0, r2}\n"
-            "   4:	4a00      	ldr	r2, [pc, #0]	; (0x8)\n"
-            "   6:	e001      	b.n	0xc\n"
-            "   8:	def0      	udf	#240	; 0xf0\n"
-            "   a:	9abc      	ldr	r2, [sp, #752]	; 0x2f0\n"
-            "   c:	4b00      	ldr	r3, [pc, #0]	; (0x10)\n"
-            "   e:	e001      	b.n	0x14\n"
-            "  10:	5678      	ldrsb	r0, [r7, r1]\n"
-            "  12:	1234      	asrs	r4, r6, #8\n"
-            "  14:	47b8      	blx	r7\n"
-            "  16:	4607      	mov	r7, r0\n"
-            "  18:	bc05      	pop	{r0, r2}"
+            "   4:	4a06      	ldr	r2, [pc, #24]	@ (0x20)\n"
+            "   6:	4b07      	ldr	r3, [pc, #28]	@ (0x24)\n"
+            "   8:	47b8      	blx	r7\n"
+            "   a:	4607      	mov	r7, r0\n"
+            "   c:	bc05      	pop	{r0, r2}\n"
+            "   e:	6cd6      	ldr	r6, [r2, #76]	@ 0x4c\n"
+            "  10:	b082      	sub	sp, #8\n"
+            "  12:	9700      	str	r7, [sp, #0]\n"
+            "  14:	9902      	ldr	r1, [sp, #8]\n"
+            "  16:	2210      	movs	r2, #16\n"
+            "  18:	4b03      	ldr	r3, [pc, #12]	@ (0x28)\n"
+            "  1a:	47b0      	blx	r6\n"
+            "  1c:	b002      	add	sp, #8\n"
+            "  1e:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}\n"
+            "  20:	def0      	udf	#240	@ 0xf0\n"
+            "  22:	9abc      	ldr	r2, [sp, #752]	@ 0x2f0\n"
+            "  24:	5678      	ldrsb	r0, [r7, r1]\n"
+            "  26:	1234      	asrs	r4, r6, #8\n"
+            "  28:	028b      	lsls	r3, r1, #10\n"
+            "  2a:	0000      	movs	r0, r0"
         >>,
     ?assertEqual(dump_to_bin(Dump), Stream).
 
@@ -3442,6 +3735,27 @@ call_func_ptr_register_exhaustion_test_() ->
                 end)
             ]
         end}.
+
+%% Test jump_to_continuation optimization for intra-module returns
+jump_to_continuation_test() ->
+    State0 = ?BACKEND:new(?JIT_VARIANT_PIC, jit_stream_binary, jit_stream_binary:new(0)),
+    State1 = ?BACKEND:jump_to_continuation(State0, {free, r0}),
+    Stream = ?BACKEND:stream(State1),
+    % Expected: armv6m PIC sequence with function epilogue pattern
+    % Based on actual generated output
+    Dump =
+        <<
+            "   0:	a700      	add	r7, pc, #0	; (adr r7, 0x4)\n"
+            "   2:	19c0      	adds	r0, r0, r7\n"
+            "   4:	2703      	movs	r7, #3\n"
+            "   6:	427f      	negs	r7, r7\n"
+            "   8:	19c0      	adds	r0, r0, r7\n"
+            "   a:	9f05      	ldr	r7, [sp, #20]\n"
+            "   c:	9005      	str	r0, [sp, #20]\n"
+            "   e:	46be      	mov	lr, r7\n"
+            "  10:	bdf2      	pop	{r1, r4, r5, r6, r7, pc}"
+        >>,
+    ?assertEqual(dump_to_bin(Dump), Stream).
 
 %% Mimic part of add.beam
 add_beam_test() ->
